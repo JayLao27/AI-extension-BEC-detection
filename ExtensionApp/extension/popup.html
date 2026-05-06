@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Phishing Detector</title>
+    <link rel="stylesheet" type="text/css" href="popup.css">
+</head>
+<body>
+    <div class="container">
+        <h2>Phishing Detector</h2>
+        
+        <button id="scanPageBtn" style="background-color: #ff9800; margin-bottom: 15px;">Scan Current Page</button>
+        
+        <p style="text-align: center; margin: 0 0 10px 0;">-- OR PASTE TEXT MANUALLY --</p>
+        
+        <textarea id="inputText" rows="6" placeholder="Enter text here..."></textarea>
+        
+        <button id="analyzeBtn">Analyze Text</button>
+        
+        <div id="loader" class="hidden">Analyzing...</div>
+        
+        <div id="resultBox" class="hidden">
+            <h3 id="resultStatus"></h3>
+            <p id="confidenceLevel"></p>
+        </div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>
