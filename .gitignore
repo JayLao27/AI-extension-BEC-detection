@@ -1,4 +1,4 @@
-﻿Dataset/venv/
+Dataset/venv/
 Dataset/phishing_email.csv
 Dataset/emails.csv
-
+venv/
