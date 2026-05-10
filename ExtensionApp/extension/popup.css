@@ -25,6 +25,33 @@ textarea {
     border-radius: 4px;
 }
 
+.manual-inputs {
+    display: flex;
+    flex-direction: column;
+}
+
+.manual-inputs label {
+    margin: 0 0 5px 0;
+    font-size: 13px;
+    font-weight: bold;
+    color: #444;
+}
+
+.manual-inputs input,
+.manual-inputs textarea {
+    margin-bottom: 12px;
+    padding: 8px;
+    font-family: inherit;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
+    width: 100%;
+}
+
+.manual-inputs input {
+    height: 34px;
+}
+
 button {
     background-color: #1976d2;
     color: white;

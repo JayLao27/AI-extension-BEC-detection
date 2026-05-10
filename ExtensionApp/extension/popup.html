@@ -11,8 +11,17 @@
         <button id="scanPageBtn" style="background-color: #ff9800; margin-bottom: 15px;">Scan Current Page</button>
         
         <p style="text-align: center; margin: 0 0 10px 0;">-- OR PASTE TEXT MANUALLY --</p>
-        
-        <textarea id="inputText" rows="6" placeholder="Enter text here..."></textarea>
+
+        <div class="manual-inputs">
+            <label for="inputSubject">Subject</label>
+            <input id="inputSubject" type="text" placeholder="Paste the email subject here...">
+
+            <label for="inputHeader">Header</label>
+            <textarea id="inputHeader" rows="3" placeholder="Paste sender, recipient, date, or other header details here..."></textarea>
+
+            <label for="inputBody">Body</label>
+            <textarea id="inputBody" rows="6" placeholder="Paste the email body here..."></textarea>
+        </div>
         
         <button id="analyzeBtn">Analyze Text</button>
         

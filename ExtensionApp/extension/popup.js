@@ -1,30 +1,109 @@
 // Function to be injected into the active web page
 function scrapeEmailContent() {
-    // Grab the page title, which often contains the email subject
-    let subject = document.title || "";
-    let bodyText = "";
+    const host = window.location.hostname.toLowerCase();
 
-    // 1. Try to find Gmail's email body
-    const gmailBody = document.querySelector('.a3s.aiL');
-    // 2. Try to find Outlook's email body (generic selector)
-    const outlookBody = document.querySelector('[aria-label="Message body"]');
-    // 3. Fallback: Any selected text on the page
-    const selection = window.getSelection().toString();
+    const looksLikeEmailInbox = (
+        host.includes('mail.google.com') ||
+        host.includes('outlook.office.com') ||
+        host.includes('outlook.live.com') ||
+        host.includes('mail.yahoo.com')
+    );
 
-    if (selection) {
-        bodyText = selection;
-    } else if (gmailBody) {
-        bodyText = gmailBody.innerText;
-    } else if (outlookBody) {
-        bodyText = outlookBody.innerText;
-    } else {
-        // 4. Last resort: Overall scan. Get all visible text on the page.
-        bodyText = document.body.innerText;
+    if (!looksLikeEmailInbox) {
+        return { ok: false, reason: 'not_email_inbox' };
     }
+
+    // Only scan if an actual email message is open, not the inbox list.
+    const gmailBody = document.querySelector('.a3s.aiL');
+    const outlookBody = document.querySelector('[aria-label="Message body"]');
+    const emailBody = gmailBody || outlookBody;
+
+    if (!emailBody) {
+        return { ok: false, reason: 'not_open_email' };
+    }
+
+    // Grab the page title, which often contains the email subject
+    const subject = document.title || "";
+    const bodyText = emailBody.innerText || "";
 
     // Combine subject and body, limit to 5000 characters to prevent overloading the model
     let combinedText = "Subject: " + subject + "\n\n" + bodyText;
-    return combinedText.substring(0, 5000);
+    return { ok: true, text: combinedText.substring(0, 5000) };
+}
+
+const MANUAL_DRAFT_KEY = 'phishing_detector_manual_draft';
+
+function getManualInputs() {
+    return {
+        subject: document.getElementById('inputSubject'),
+        header: document.getElementById('inputHeader'),
+        body: document.getElementById('inputBody'),
+    };
+}
+
+function buildManualText() {
+    const { subject, header, body } = getManualInputs();
+    const subjectText = subject.value.trim();
+    const headerText = header.value.trim();
+    const bodyText = body.value.trim();
+
+    return [
+        subjectText ? `Subject: ${subjectText}` : '',
+        headerText ? `Header: ${headerText}` : '',
+        bodyText ? `Body: ${bodyText}` : ''
+    ].filter(Boolean).join('\n\n').trim();
+}
+
+function saveManualDraft() {
+    const { subject, header, body } = getManualInputs();
+    chrome.storage.local.set({
+        [MANUAL_DRAFT_KEY]: {
+            subject: subject.value,
+            header: header.value,
+            body: body.value,
+        }
+    });
+}
+
+function restoreManualDraft() {
+    const { subject, header, body } = getManualInputs();
+    chrome.storage.local.get([MANUAL_DRAFT_KEY], (result) => {
+        const draft = result[MANUAL_DRAFT_KEY];
+        if (!draft) {
+            return;
+        }
+
+        subject.value = draft.subject || '';
+        header.value = draft.header || '';
+        body.value = draft.body || '';
+    });
+}
+
+function initPopupPersistence() {
+    restoreManualDraft();
+
+    const { subject, header, body } = getManualInputs();
+    [subject, header, body].forEach((input) => {
+        input.addEventListener('input', saveManualDraft);
+        input.addEventListener('change', saveManualDraft);
+        input.addEventListener('blur', saveManualDraft);
+        input.addEventListener('paste', () => {
+            window.setTimeout(saveManualDraft, 0);
+        });
+    });
+
+    window.addEventListener('beforeunload', saveManualDraft);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            saveManualDraft();
+        }
+    });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initPopupPersistence);
+} else {
+    initPopupPersistence();
 }
 
 // Handle Auto-Scan button
@@ -48,7 +127,14 @@ document.getElementById('scanPageBtn').addEventListener('click', async () => {
                 return;
             }
 
-            const scrapedText = injectionResults[0].result;
+            const scanResult = injectionResults[0].result;
+            if (!scanResult || scanResult.ok === false) {
+                alert('Not email inbox. Open an email inbox page or use manual entry below.');
+                loader.classList.add('hidden');
+                return;
+            }
+
+            const scrapedText = scanResult.text;
             if (scrapedText && scrapedText.trim().length > 0) {
                 
                 // Do the analysis blindly in the background without populating the text box
@@ -90,9 +176,10 @@ document.getElementById('scanPageBtn').addEventListener('click', async () => {
 });
 
 document.getElementById('analyzeBtn').addEventListener('click', async () => {
-    const text = document.getElementById('inputText').value.trim();
+    const text = buildManualText();
+
     if (!text) {
-        alert('Please enter some text to analyze.');
+        alert('Please enter at least one of Subject, Header, or Body to analyze.');
         return;
     }
 
