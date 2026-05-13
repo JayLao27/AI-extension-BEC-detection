@@ -33,6 +33,11 @@ function scrapeEmailContent() {
 
 const MANUAL_DRAFT_KEY = 'phishing_detector_manual_draft';
 
+function getSelectedModel() {
+    const select = document.getElementById('modelSelect');
+    return select ? select.value : 'distilbert';
+}
+
 function getManualInputs() {
     return {
         subject: document.getElementById('inputSubject'),
@@ -142,7 +147,7 @@ document.getElementById('scanPageBtn').addEventListener('click', async () => {
                     const response = await fetch('http://127.0.0.1:5000/predict', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text: scrapedText })
+                        body: JSON.stringify({ text: scrapedText, model: getSelectedModel() })
                     });
 
                     const data = await response.json();
@@ -152,7 +157,9 @@ document.getElementById('scanPageBtn').addEventListener('click', async () => {
                     if (response.ok) {
                         resultStatus.textContent = `Result: ${data.prediction}`;
                         resultStatus.style.color = data.prediction === 'Phishing' ? '#d32f2f' : '#388e3c';
-                        confidenceLevel.textContent = `Phishing Probability: ${(data.confidence * 100).toFixed(1)}%`;
+                        const modelTag = data.model_used ? ` | Model: ${data.model_used}` : '';
+                        const fallbackTag = data.fallback_used ? ' | Fallback' : '';
+                        confidenceLevel.textContent = `Phishing Probability: ${(data.confidence * 100).toFixed(1)}%${modelTag}${fallbackTag}`;
                         resultBox.classList.remove('hidden');
                     } else {
                         alert(data.error || 'Failed to analyze text.');
@@ -198,7 +205,7 @@ document.getElementById('analyzeBtn').addEventListener('click', async () => {
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ text: text })
+            body: JSON.stringify({ text: text, model: getSelectedModel() })
         });
 
         const data = await response.json();
@@ -206,7 +213,9 @@ document.getElementById('analyzeBtn').addEventListener('click', async () => {
         if (response.ok) {
             resultStatus.textContent = `Result: ${data.prediction}`;
             resultStatus.style.color = data.prediction === 'Phishing' ? '#d32f2f' : '#388e3c';
-            confidenceLevel.textContent = `Phishing Probability: ${(data.confidence * 100).toFixed(1)}%`;
+            const modelTag = data.model_used ? ` | Model: ${data.model_used}` : '';
+            const fallbackTag = data.fallback_used ? ' | Fallback' : '';
+            confidenceLevel.textContent = `Phishing Probability: ${(data.confidence * 100).toFixed(1)}%${modelTag}${fallbackTag}`;
             resultBox.classList.remove('hidden');
         } else {
             alert(data.error || 'Failed to analyze text.');

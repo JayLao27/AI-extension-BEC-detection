@@ -16,6 +16,22 @@ h2 {
     color: #333;
 }
 
+.model-label {
+    margin: 0 0 5px 0;
+    font-size: 13px;
+    font-weight: bold;
+    color: #444;
+}
+
+.model-select {
+    margin-bottom: 12px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 13px;
+    background-color: #fff;
+}
+
 textarea {
     resize: none;
     margin-bottom: 15px;

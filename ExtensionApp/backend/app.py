@@ -6,6 +6,7 @@ CORS(app)
 
 import os
 from pathlib import Path
+import pickle
 
 try:
     import torch
@@ -33,7 +34,29 @@ for p in (legacy_model, legacy_vec):
         except Exception as e:
             print(f"Could not remove {p.name}: {e}")
 
-BEST_MODEL_PATH = base_dir / 'outputs' / 'best_model.pt'
+def first_existing_path(candidates):
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+BEST_MODEL_PATH = first_existing_path([
+    base_dir / 'Datacleaning' / 'outputs' / 'distillbert(FullDataset)' / 'best_model.pt',
+    base_dir / 'outputs' / 'best_model.pt',
+])
+
+RF_MODEL_PATH = first_existing_path([
+    base_dir / 'Datacleaning' / 'outputs' / 'RandomForest(FullDataset)' / 'rf_model.pkl',
+    base_dir / 'outputs' / 'RandomForest(FullDataset)' / 'rf_model.pkl',
+])
+
+RF_VECTORIZER_PATH = first_existing_path([
+    base_dir / 'Datacleaning' / 'outputs' / 'RandomForest(FullDataset)' / 'tfidf_vectorizer.joblib',
+    base_dir / 'Datacleaning' / 'outputs' / 'RandomForest(FullDataset)' / 'vectorizer.pkl',
+    base_dir / 'outputs' / 'RandomForest(FullDataset)' / 'tfidf_vectorizer.joblib',
+    base_dir / 'outputs' / 'RandomForest(FullDataset)' / 'vectorizer.pkl',
+])
 MODEL_NAME = 'distilroberta-base'
 
 # Validate that we're using a distil model
@@ -44,6 +67,8 @@ print(f"✓ Model validation passed: Using {MODEL_NAME}")
 model = None
 tokenizer = None
 device = None
+rf_model = None
+rf_vectorizer = None
 
 
 def fallback_phishing_score(text):
@@ -94,50 +119,91 @@ if HAVE_TORCH:
 else:
     print("Torch/Transformers not available — server will run using dummy fallback.")
 
+if RF_MODEL_PATH.exists():
+    try:
+        with open(RF_MODEL_PATH, 'rb') as f:
+            rf_model = pickle.load(f)
+        print(f"SUCCESS: Loaded Random Forest model from {RF_MODEL_PATH}")
+    except Exception as e:
+        print(f"Failed to load Random Forest model: {e}")
+        rf_model = None
+else:
+    print(f"WARNING: {RF_MODEL_PATH} not found. Random Forest inference unavailable.")
+
+if RF_VECTORIZER_PATH.exists():
+    try:
+        if RF_VECTORIZER_PATH.suffix.lower() == '.joblib':
+            import joblib
+            rf_vectorizer = joblib.load(RF_VECTORIZER_PATH)
+        else:
+            with open(RF_VECTORIZER_PATH, 'rb') as f:
+                rf_vectorizer = pickle.load(f)
+        print(f"SUCCESS: Loaded Random Forest vectorizer from {RF_VECTORIZER_PATH}")
+    except Exception as e:
+        print(f"Failed to load Random Forest vectorizer: {e}")
+        rf_vectorizer = None
+else:
+    print(f"WARNING: {RF_VECTORIZER_PATH} not found. Random Forest inference unavailable.")
+
 @app.route('/predict', methods=['POST'])
 def predict():
     data = request.json
     text_to_test = data.get('text', '')
+    model_choice = str(data.get('model', 'distilbert')).strip().lower()
 
     if not text_to_test:
         return jsonify({'error': 'No text provided'}), 400
 
-    if model is not None and tokenizer is not None:
-        try:
-            # Tokenize and run the PyTorch model
-            enc = tokenizer([str(text_to_test)], max_length=192, padding='max_length', truncation=True, return_tensors='pt')
-            input_ids = enc['input_ids'].to(device)
-            attention_mask = enc['attention_mask'].to(device)
-            with torch.no_grad():
-                logits, mp, anom = model(input_ids, attention_mask)
-                probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
-            phishing_score = float(probs[0]) if hasattr(probs, '__len__') else float(probs)
-            result = "Phishing" if phishing_score >= 0.60 else "Safe"
-            confidence = phishing_score
-        except Exception as e:
-            # If something goes wrong with model inference, fall back to dummy logic
-            print(f"Model inference failed: {e}")
-            model_fallback = True
+    if model_choice in ('rf', 'random_forest', 'randomforest'):
+        selected_model = 'random_forest'
+        if rf_model is not None and rf_vectorizer is not None:
+            try:
+                features = rf_vectorizer.transform([str(text_to_test)])
+                if hasattr(rf_model, 'predict_proba'):
+                    phishing_score = float(rf_model.predict_proba(features)[0][1])
+                else:
+                    pred = int(rf_model.predict(features)[0])
+                    phishing_score = float(pred)
+                result = "Phishing" if phishing_score >= 0.60 else "Safe"
+                confidence = phishing_score
+                model_fallback = False
+            except Exception as e:
+                print(f"Random Forest inference failed: {e}")
+                model_fallback = True
         else:
-            model_fallback = False
+            model_fallback = True
     else:
-        model_fallback = True
+        selected_model = 'distilbert'
+        if model is not None and tokenizer is not None:
+            try:
+                enc = tokenizer([str(text_to_test)], max_length=192, padding='max_length', truncation=True, return_tensors='pt')
+                input_ids = enc['input_ids'].to(device)
+                attention_mask = enc['attention_mask'].to(device)
+                with torch.no_grad():
+                    logits, mp, anom = model(input_ids, attention_mask)
+                    probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
+                phishing_score = float(probs[0]) if hasattr(probs, '__len__') else float(probs)
+                result = "Phishing" if phishing_score >= 0.60 else "Safe"
+                confidence = phishing_score
+                model_fallback = False
+            except Exception as e:
+                print(f"Distil model inference failed: {e}")
+                model_fallback = True
+        else:
+            model_fallback = True
 
     if model_fallback:
         # Deterministic fallback so the same text always gets the same result.
         phishing_score = fallback_phishing_score(text_to_test)
         result = "Phishing" if phishing_score >= 0.60 else "Safe"
         confidence = float(phishing_score)
-    else:
-        # Use the same deterministic scoring path for a stable label.
-        phishing_score = fallback_phishing_score(text_to_test)
-        result = "Phishing" if phishing_score >= 0.60 else "Safe"
-        confidence = float(phishing_score) # ensure float for JSON serialization
 
     return jsonify({
         'prediction': result,
         'confidence': float(confidence),
-        'original_text_length': len(text_to_test)
+        'original_text_length': len(text_to_test),
+        'model_used': selected_model,
+        'fallback_used': model_fallback,
     })
 
 if __name__ == '__main__':

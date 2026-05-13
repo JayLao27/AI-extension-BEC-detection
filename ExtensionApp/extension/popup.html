@@ -7,6 +7,12 @@
 <body>
     <div class="container">
         <h2>Phishing Detector</h2>
+
+        <label for="modelSelect" class="model-label">Model</label>
+        <select id="modelSelect" class="model-select">
+            <option value="distilbert">best_model.pt (Distil)</option>
+            <option value="random_forest">rf_model.pkl (Random Forest)</option>
+        </select>
         
         <button id="scanPageBtn" style="background-color: #ff9800; margin-bottom: 15px;">Scan Current Page</button>
         
