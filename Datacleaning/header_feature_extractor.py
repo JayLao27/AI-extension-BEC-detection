@@ -216,7 +216,7 @@ class HeaderFeatureExtractor:
             features = self.extract_header_features(sender, reply_to, subject, is_training)
             features_list.append(features)
         
-        features_df = pd.DataFrame(features_list)
+        features_df = pd.DataFrame(features_list, index=df.index)
         return df.join(features_df)
     
     def get_impersonation_gate(self, impersonation_score_threshold=0.5):

@@ -83,6 +83,10 @@ button:hover {
     background-color: #1565c0;
 }
 
+button[id="resetBtn"]:hover {
+    background-color: #e53935;
+}
+
 .hidden {
     display: none;
 }

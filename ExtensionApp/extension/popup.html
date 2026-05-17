@@ -10,11 +10,13 @@
 
         <label for="modelSelect" class="model-label">Model</label>
         <select id="modelSelect" class="model-select">
-            <option value="distilbert">best_model.pt (Distil)</option>
-            <option value="random_forest">rf_model.pkl (Random Forest)</option>
+            <option value="two_stage_bec">Two-Stage BEC Detection (Header XGBoost + Body KNN)</option>
         </select>
         
-        <button id="scanPageBtn" style="background-color: #ff9800; margin-bottom: 15px;">Scan Current Page</button>
+        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+            <button id="scanPageBtn" style="background-color: #ff9800; flex: 1;">Scan Current Page</button>
+            <button id="resetBtn" style="background-color: #f44336; flex: 1;">Reset</button>
+        </div>
         
         <p style="text-align: center; margin: 0 0 10px 0;">-- OR PASTE TEXT MANUALLY --</p>
 

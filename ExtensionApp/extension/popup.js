@@ -13,7 +13,7 @@ function scrapeEmailContent() {
         return { ok: false, reason: 'not_email_inbox' };
     }
 
-    // Only scan if an actual email message is open, not the inbox list.
+    // Only scan if an actual email message is open
     const gmailBody = document.querySelector('.a3s.aiL');
     const outlookBody = document.querySelector('[aria-label="Message body"]');
     const emailBody = gmailBody || outlookBody;
@@ -22,13 +22,54 @@ function scrapeEmailContent() {
         return { ok: false, reason: 'not_open_email' };
     }
 
-    // Grab the page title, which often contains the email subject
+    // Extract subject from page title or email header
     const subject = document.title || "";
-    const bodyText = emailBody.innerText || "";
+    
+    // Get sender/from information
+    let senderName = "";
+    let senderEmail = "";
+    
+    // Gmail: Look for sender in header
+    const gmailSenderName = document.querySelector('span[email]');
+    if (gmailSenderName) {
+        senderName = gmailSenderName.textContent || "";
+        senderEmail = gmailSenderName.getAttribute('email') || "";
+    }
+    
+    // Outlook: Look for from field
+    const outlookFromField = document.querySelector('[data-test-id="from-field"]');
+    if (outlookFromField && !senderName) {
+        senderName = outlookFromField.textContent || "";
+    }
+    
+    // Fallback: extract from subject or first visible header element
+    if (!senderName) {
+        const headerElements = document.querySelectorAll('[role="heading"], .bAk, [data-tooltip-id]');
+        for (let elem of headerElements) {
+            const text = elem.textContent;
+            if (text && text.includes('@')) {
+                senderEmail = text;
+                break;
+            }
+        }
+    }
+    
+    // Build header with sender information
+    const headerText = `From: ${senderName || senderEmail || "Unknown Sender"}\nSubject: ${subject}`;
+    
+    // Get complete email body text (all content, not just visible portion)
+    const bodyText = emailBody.innerText || emailBody.textContent || "";
 
-    // Combine subject and body, limit to 5000 characters to prevent overloading the model
-    let combinedText = "Subject: " + subject + "\n\n" + bodyText;
-    return { ok: true, text: combinedText.substring(0, 5000) };
+    // Combine all content, limit to 10000 characters to prevent overloading
+    let combinedText = headerText + "\n\n" + bodyText;
+    
+    return { 
+        ok: true, 
+        text: combinedText.substring(0, 10000),
+        sender: senderName || senderEmail || "Unknown",
+        subject: subject,
+        bodyText: bodyText.substring(0, 8000)
+    };
 }
 
 const MANUAL_DRAFT_KEY = 'phishing_detector_manual_draft';
@@ -140,9 +181,23 @@ document.getElementById('scanPageBtn').addEventListener('click', async () => {
             }
 
             const scrapedText = scanResult.text;
+            const scrapedSender = scanResult.sender || "Unknown";
+            const scrapedSubject = scanResult.subject || "";
+            const scrapedBody = scanResult.bodyText || "";
+            
             if (scrapedText && scrapedText.trim().length > 0) {
+                // Parse the scraped text and populate the fields
+                const { subject, header, body } = getManualInputs();
                 
-                // Do the analysis blindly in the background without populating the text box
+                // Populate sender/From in header field
+                subject.value = scrapedSubject;
+                header.value = `From: ${scrapedSender}`;
+                body.value = scrapedBody;
+                
+                // Save the populated fields
+                saveManualDraft();
+                
+                // Automatically analyze the scanned content
                 try {
                     const response = await fetch('http://127.0.0.1:5000/predict', {
                         method: 'POST',
@@ -156,10 +211,12 @@ document.getElementById('scanPageBtn').addEventListener('click', async () => {
 
                     if (response.ok) {
                         resultStatus.textContent = `Result: ${data.prediction}`;
-                        resultStatus.style.color = data.prediction === 'Phishing' ? '#d32f2f' : '#388e3c';
+                        resultStatus.style.color = data.prediction === 'BEC' ? '#d32f2f' : '#388e3c';
                         const modelTag = data.model_used ? ` | Model: ${data.model_used}` : '';
-                        const fallbackTag = data.fallback_used ? ' | Fallback' : '';
-                        confidenceLevel.textContent = `Phishing Probability: ${(data.confidence * 100).toFixed(1)}%${modelTag}${fallbackTag}`;
+                        const fallbackTag = data.fallback_used ? ' | ⚠️ Fallback' : '';
+                        const confidence = data.confidence !== undefined ? data.confidence : data.bec_probability;
+                        const confidenceValue = typeof confidence === 'string' ? confidence : (confidence * 100).toFixed(1) + '%';
+                        confidenceLevel.textContent = `BEC Probability: ${confidenceValue}${modelTag}${fallbackTag}`;
                         resultBox.classList.remove('hidden');
                     } else {
                         alert(data.error || 'Failed to analyze text.');
@@ -212,10 +269,12 @@ document.getElementById('analyzeBtn').addEventListener('click', async () => {
         
         if (response.ok) {
             resultStatus.textContent = `Result: ${data.prediction}`;
-            resultStatus.style.color = data.prediction === 'Phishing' ? '#d32f2f' : '#388e3c';
+            resultStatus.style.color = data.prediction === 'BEC' ? '#d32f2f' : '#388e3c';
             const modelTag = data.model_used ? ` | Model: ${data.model_used}` : '';
-            const fallbackTag = data.fallback_used ? ' | Fallback' : '';
-            confidenceLevel.textContent = `Phishing Probability: ${(data.confidence * 100).toFixed(1)}%${modelTag}${fallbackTag}`;
+            const fallbackTag = data.fallback_used ? ' | ⚠️ Fallback' : '';
+            const confidence = data.confidence !== undefined ? data.confidence : data.bec_probability;
+            const confidenceValue = typeof confidence === 'string' ? confidence : (confidence * 100).toFixed(1) + '%';
+            confidenceLevel.textContent = `BEC Probability: ${confidenceValue}${modelTag}${fallbackTag}`;
             resultBox.classList.remove('hidden');
         } else {
             alert(data.error || 'Failed to analyze text.');
@@ -226,4 +285,21 @@ document.getElementById('analyzeBtn').addEventListener('click', async () => {
     } finally {
         loader.classList.add('hidden');
     }
+});
+
+// Handle Reset button
+document.getElementById('resetBtn').addEventListener('click', () => {
+    const { subject, header, body } = getManualInputs();
+    
+    // Clear all text fields
+    subject.value = '';
+    header.value = '';
+    body.value = '';
+    
+    // Clear result box
+    const resultBox = document.getElementById('resultBox');
+    resultBox.classList.add('hidden');
+    
+    // Save the cleared state
+    saveManualDraft();
 });
