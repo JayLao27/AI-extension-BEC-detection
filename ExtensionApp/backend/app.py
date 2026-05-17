@@ -176,9 +176,17 @@ def extract_subject_from_header(header_text):
                 raw = line.split(':', 1)[1].strip()
                 break
 
-    # Remove any angle-bracketed content like <receiver@gmail.com>
-    cleaned = re.sub(r'<[^>]+>', '', raw).strip()
-    return cleaned
+    s = re.sub(r'<[^>]+>', '', raw)
+
+    s = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', '', s)
+
+    s = re.sub(r'[\-\|:]\s*[^\-\|:]{0,160}mail.*$', '', s, flags=re.IGNORECASE)
+
+    # 4) Collapse whitespace and strip leftover separators/punctuation
+    s = re.sub(r'[\s\u00A0]+', ' ', s).strip()
+    s = s.strip(' -–—:;,.\t\n')
+
+    return s
 
 def fallback_bec_score(text):
     """
