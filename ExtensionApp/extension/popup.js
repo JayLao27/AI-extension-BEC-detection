@@ -25,6 +25,21 @@ function scrapeEmailContent() {
     // Extract subject from page title or email header
     const subject = document.title || "";
     
+    function normalizeSenderLabel(nameText, emailText) {
+        const cleanedName = (nameText || '').trim();
+        const cleanedEmail = (emailText || '').trim();
+
+        if (cleanedName && cleanedName.toLowerCase() !== 'me') {
+            return cleanedName;
+        }
+
+        if (cleanedEmail) {
+            return cleanedEmail;
+        }
+
+        return "Unknown Sender";
+    }
+
     // Get sender/from information
     let senderName = "";
     let senderEmail = "";
@@ -32,8 +47,13 @@ function scrapeEmailContent() {
     // Gmail: Look for sender in header
     const gmailSenderName = document.querySelector('span[email]');
     if (gmailSenderName) {
-        senderName = gmailSenderName.textContent || "";
-        senderEmail = gmailSenderName.getAttribute('email') || "";
+        senderName = (gmailSenderName.textContent || "").trim();
+        senderEmail = (gmailSenderName.getAttribute('email') || "").trim();
+
+        // Gmail often shows "me" for your own account; prefer actual email in that case.
+        if (senderName.toLowerCase() === 'me' && senderEmail) {
+            senderName = "";
+        }
     }
     
     // Outlook: Look for from field
@@ -54,8 +74,10 @@ function scrapeEmailContent() {
         }
     }
     
+    const displaySender = normalizeSenderLabel(senderName, senderEmail);
+
     // Build header with sender information
-    const headerText = `From: ${senderName || senderEmail || "Unknown Sender"}\nSubject: ${subject}`;
+    const headerText = `From: ${displaySender}\nSubject: ${subject}`;
     
     // Get complete email body text (all content, not just visible portion)
     const bodyText = emailBody.innerText || emailBody.textContent || "";
@@ -66,7 +88,7 @@ function scrapeEmailContent() {
     return { 
         ok: true, 
         text: combinedText.substring(0, 10000),
-        sender: senderName || senderEmail || "Unknown",
+        sender: displaySender,
         subject: subject,
         bodyText: bodyText.substring(0, 8000)
     };

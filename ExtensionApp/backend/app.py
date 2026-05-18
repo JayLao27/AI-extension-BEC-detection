@@ -1,424 +1,347 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import re
-import json
-import joblib
-from pathlib import Path
 
 app = Flask(__name__)
 CORS(app) 
 
+import os
+from pathlib import Path
+import re
+import pickle
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    from transformers import AutoTokenizer, AutoModel
+    HAVE_TORCH = True
+except Exception as e:
+    print(f"Optional dependency missing (torch/transformers): {e}")
+    HAVE_TORCH = False
+    torch = None
+    nn = None
+    F = None
+    AutoTokenizer = None
+    AutoModel = None
+
 base_dir = Path(__file__).resolve().parents[2]
+legacy_model = Path(__file__).resolve().parent / 'model.pkl'
+legacy_vec = Path(__file__).resolve().parent / 'vectorizer.pkl'
+for p in (legacy_model, legacy_vec):
+    if p.exists():
+        try:
+            p.unlink()
+            print(f"Removed legacy file: {p.name}")
+        except Exception as e:
+            print(f"Could not remove {p.name}: {e}")
 
-# ============================================================================
-# TWO-STAGE BEC DETECTION MODELS
-# ============================================================================
-# Models: Header (XGBoost) + Body (KNN) + Final (Logistic Regression)
+def first_existing_path(candidates):
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
-# Define paths for Two-Stage models
-MODELS_DIR = Path(__file__).resolve().parent / 'models'
-HEADER_VECTORIZER_PATH = MODELS_DIR / 'header_vectorizer.joblib'
-BODY_VECTORIZER_PATH = MODELS_DIR / 'body_vectorizer.joblib'
-HEADER_MODEL_PATH = MODELS_DIR / 'header_model.joblib'
-BODY_MODEL_PATH = MODELS_DIR / 'body_model.joblib'
-FINAL_MODEL_PATH = MODELS_DIR / 'final_model.joblib'
-METADATA_PATH = MODELS_DIR / 'metadata.json'
 
-# Initialize model containers
-header_vectorizer = None
-body_vectorizer = None
-header_model = None
-body_model = None
-final_model = None
-metadata = {}
-
-print("\n" + "="*60)
-print("INITIALIZING TWO-STAGE BEC DETECTION SYSTEM")
-print("="*60)
-
-# Load metadata
-if METADATA_PATH.exists():
-    try:
-        with open(METADATA_PATH, 'r') as f:
-            metadata = json.load(f)
-        print(f"✓ Loaded metadata: {metadata.get('description', 'Two-Stage BEC Detection')}")
-    except Exception as e:
-        print(f"⚠ Failed to load metadata: {e}")
-
-# BEC keyword list used for heuristic signals and fallback scoring
-# Includes multiple languages and common phrases
-BEC_KEYWORDS = [
-    'invoice','payment','paycheck','transfer','bank statement','bank details',
-    'closing','funds','bank account','account details','remittance','purchase',
-    'deposit','PO#','Zahlung','Rechnung','Paiement','virement bancaire',
-    'Bankuberweisung','hacked','phishing'
-]
-
-# Load vectorizers
-if HEADER_VECTORIZER_PATH.exists():
-    try:
-        header_vectorizer = joblib.load(HEADER_VECTORIZER_PATH)
-        print(f"✓ Loaded header_vectorizer ({header_vectorizer.get_feature_names_out().shape[0]} features)")
-    except Exception as e:
-        print(f"✗ Failed to load header_vectorizer: {e}")
-
-if BODY_VECTORIZER_PATH.exists():
-    try:
-        body_vectorizer = joblib.load(BODY_VECTORIZER_PATH)
-        print(f"✓ Loaded body_vectorizer ({body_vectorizer.get_feature_names_out().shape[0]} features)")
-    except Exception as e:
-        print(f"✗ Failed to load body_vectorizer: {e}")
-
-# Load models
-if HEADER_MODEL_PATH.exists():
-    try:
-        header_model = joblib.load(HEADER_MODEL_PATH)
-        print(f"✓ Loaded header_model ({metadata.get('header_model', 'unknown')})")
-    except Exception as e:
-        print(f"✗ Failed to load header_model: {e}")
-
-if BODY_MODEL_PATH.exists():
-    try:
-        body_model = joblib.load(BODY_MODEL_PATH)
-        print(f"✓ Loaded body_model ({metadata.get('body_model', 'unknown')})")
-    except Exception as e:
-        print(f"✗ Failed to load body_model: {e}")
-
-if FINAL_MODEL_PATH.exists():
-    try:
-        final_model = joblib.load(FINAL_MODEL_PATH)
-        print(f"✓ Loaded final_model (Logistic Regression Stacking)")
-    except Exception as e:
-        print(f"✗ Failed to load final_model: {e}")
-
-models_ready = all([
-    header_vectorizer is not None,
-    body_vectorizer is not None,
-    header_model is not None,
-    body_model is not None,
-    final_model is not None
+BEST_MODEL_PATH = first_existing_path([
+    base_dir / 'Datacleaning' / 'outputs' / 'distillbert(FullDataset)' / 'best_model.pt',
+    base_dir / 'outputs' / 'best_model.pt',
 ])
 
-if models_ready:
-    print(f"\n✓ TWO-STAGE SYSTEM READY")
-    print(f"  Header Accuracy: {metadata.get('header_accuracy', 'N/A')}")
-    print(f"  Body Accuracy: {metadata.get('body_accuracy', 'N/A')}")
-    print(f"  Final Accuracy: {metadata.get('final_accuracy', 'N/A')}")
-else:
-    print(f"\n⚠ WARNING: Some models failed to load. System will use fallback.")
-print("="*60 + "\n")
+RF_MODEL_PATH = first_existing_path([
+    base_dir / 'Datacleaning' / 'outputs' / 'RandomForest(FullDataset)' / 'rf_model.pkl',
+    base_dir / 'outputs' / 'RandomForest(FullDataset)' / 'rf_model.pkl',
+])
+
+RF_VECTORIZER_PATH = first_existing_path([
+    base_dir / 'Datacleaning' / 'outputs' / 'RandomForest(FullDataset)' / 'tfidf_vectorizer.joblib',
+    base_dir / 'Datacleaning' / 'outputs' / 'RandomForest(FullDataset)' / 'vectorizer.pkl',
+    base_dir / 'outputs' / 'RandomForest(FullDataset)' / 'tfidf_vectorizer.joblib',
+    base_dir / 'outputs' / 'RandomForest(FullDataset)' / 'vectorizer.pkl',
+])
+MODEL_NAME = 'distilroberta-base'
+
+# Validate that we're using a distil model
+if 'distil' not in MODEL_NAME.lower():
+    raise ValueError(f"ERROR: Expected a distil-based model (distilbert/distilroberta), but got '{MODEL_NAME}'")
+print(f"✓ Model validation passed: Using {MODEL_NAME}")
+
+model = None
+tokenizer = None
+device = None
+rf_model = None
+rf_vectorizer = None
 
 
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
+def fallback_phishing_score(text):
+    keywords = ['urgent', 'password', 'bank', 'log in', 'wire', 'account', 'verify', 'click here', 'suspended', 'arrange', 'quick']
+    lowered_text = text.lower()
+    keyword_count = sum(1 for keyword in keywords if keyword in lowered_text)
+    phishing_score = 0.15 + (keyword_count * 0.2)
+    return min(0.99, phishing_score)
+
+def extract_email_from_header(header_text):
+    """Return the first email address found in the header text, or empty string."""
+    if not isinstance(header_text, str):
+        return ""
+    m = re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', header_text)
+    return m.group(0).strip() if m else ""
+
+
+def sender_name_from_email(email_text):
+    if not isinstance(email_text, str) or '@' not in email_text:
+        return ""
+    local = email_text.split('@', 1)[0]
+    parts = [part for part in re.split(r'[._\-]+', local) if part]
+    if not parts:
+        return ""
+    return " ".join(part.capitalize() for part in parts)
+
+
+def extract_signature_name(body_text):
+    """Try to extract a signer name from common sign-off patterns in the body.
+
+    Looks for lines after sign-offs like 'Best regards', 'Regards', 'Sincerely',
+    'Thanks', 'Thank you', and returns the following name line if present.
+    """
+    if not isinstance(body_text, str):
+        return ""
+
+    # Normalize line endings
+    text = body_text.replace('\r', '')
+
+    # Common signoff keywords
+    signoffs = r'(?:best regards|regards|sincerely|kind regards|thanks|thank you|cheers|best)'
+
+    # Pattern: signoff followed by optional comma and then a newline and a capitalized name line
+    signoff_newline = re.compile(rf'(?im){signoffs}[\s,:\-]*\n+\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){{0,3}})')
+    m = signoff_newline.search(text)
+    if m:
+        return m.group(1).strip()
+
+    # Also handle inline signoffs like 'Best regards, Bill Gates' where the name is multi-word
+    pattern_inline = re.compile(rf'(?im){signoffs}\s*,?\s*([A-Z][A-Za-z\'\-]+(?:\s+[A-Z][A-Za-z\'\-]+)+)')
+    m2 = pattern_inline.search(text)
+    if m2:
+        return m2.group(1).strip()
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    tail = lines[-6:] if len(lines) >= 6 else lines
+    name_pattern = re.compile(r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}$')
+    # skip common signoff words and look for a capitalized name line
+    skip = set([s.lower() for s in ['best regards', 'regards', 'sincerely', 'kind regards', 'thanks', 'thank you', 'cheers', 'best']])
+    for ln in reversed(tail):
+        if ln.lower() in skip:
+            continue
+        if name_pattern.match(ln):
+            return ln.strip()
+
+    return ""
+
 
 def extract_header_body(text):
-    """
-    Separate email header from body.
-    Header contains: From, Subject, Reply-To, Date, etc.
-    Body contains: the sender's actual message
-    """
+    """Split combined text into header and body parts."""
     if not isinstance(text, str):
         return "", ""
-    
-    # Standard raw emails use \n\n to separate headers and body
     parts = re.split(r'\n\s*\n', text, maxsplit=1)
     if len(parts) == 2:
         return parts[0], parts[1]
-    
-    # Fallback heuristic: assume first 150 chars contains header info
-    return text[:150], text[150:]
+    return text[:200], text[200:]
 
-def extract_sender_from_header(header_text):
-    """
-    Extract sender (From) email/name from header.
-    """
-    if not isinstance(header_text, str):
-        return ""
+if HAVE_TORCH:
+    class MultiTaskPhishModel(nn.Module):
+        def __init__(self, model_name, dropout, manip_dim):
+            super().__init__()
+            self.backbone = AutoModel.from_pretrained(model_name)
+            hidden_size = self.backbone.config.hidden_size
+            self.dropout = nn.Dropout(dropout)
+            self.classifier = nn.Linear(hidden_size, 2)
+            self.manip_head = nn.Linear(hidden_size, manip_dim)
+            self.anom_head = nn.Linear(hidden_size, 1)
 
-    # Look for From: field
-    from_match = re.search(r'From:\s*(.+?)(?:\n|$)', header_text, re.IGNORECASE)
-    if from_match:
-        raw = from_match.group(1).strip()
+        def forward(self, input_ids, attention_mask):
+            outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
+            pooled = outputs.last_hidden_state[:, 0]
+            pooled = self.dropout(pooled)
+            logits = self.classifier(pooled)
+            manip = torch.sigmoid(self.manip_head(pooled))
+            anom = torch.sigmoid(self.anom_head(pooled))
+            return logits, manip, anom
+
+    # Try to load the trained PyTorch checkpoint and tokenizer
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if BEST_MODEL_PATH.exists():
         try:
-            from email.utils import parseaddr
-            name, email_addr = parseaddr(raw)
-            if name:
-                return name.strip().strip('"')
-            if email_addr:
-                return email_addr.split('@')[0]
-        except Exception:
-            # Fallback: remove angle-bracketed addresses and return text
-            return re.sub(r'<[^>]+>', '', raw).strip()
-
-    # Fallback: first line might be sender; clean angle-bracketed addresses
-    first_line = header_text.split('\n')[0] if header_text else ""
-    return re.sub(r'<[^>]+>', '', first_line).strip()
-
-
-def extract_subject_from_header(header_text):
-    """
-    Extract the Subject line from the header and return cleaned text
-    (removes any <email@domain> parts).
-    """
-    if not isinstance(header_text, str):
-        return ""
-
-    subj_match = re.search(r'Subject:\s*(.+?)(?:\n|$)', header_text, re.IGNORECASE)
-    if subj_match:
-        raw = subj_match.group(1).strip()
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+            model = MultiTaskPhishModel(MODEL_NAME, dropout=0.3, manip_dim=5).to(device)
+            model.load_state_dict(torch.load(BEST_MODEL_PATH, map_location=device))
+            model.eval()
+            print(f"SUCCESS: Loaded PyTorch checkpoint from {BEST_MODEL_PATH}")
+        except Exception as e:
+            print(f"Failed to load PyTorch model: {e}")
+            model = None
+            tokenizer = None
     else:
-        # Try a safe fallback scanning lines
-        raw = ""
-        for line in header_text.split('\n'):
-            if line.lower().startswith('subject:'):
-                raw = line.split(':', 1)[1].strip()
-                break
+        print(f"WARNING: {BEST_MODEL_PATH} not found. Falling back to dummy predictor.")
+        model = None
+        tokenizer = None
+else:
+    print("Torch/Transformers not available — server will run using dummy fallback.")
 
-    s = re.sub(r'<[^>]+>', '', raw)
-
-    s = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', '', s)
-
-    s = re.sub(r'[\-\|:]\s*[^\-\|:]{0,160}mail.*$', '', s, flags=re.IGNORECASE)
-
-    # 4) Collapse whitespace and strip leftover separators/punctuation
-    s = re.sub(r'[\s\u00A0]+', ' ', s).strip()
-    s = s.strip(' -–—:;,.\t\n')
-
-    return s
-
-def fallback_bec_score(text):
-    """
-    Fallback BEC detection using keyword heuristics.
-    """
-    lowered_text = text.lower()
-    keyword_count = sum(1 for kw in BEC_KEYWORDS if kw.lower() in lowered_text)
-    bec_score = 0.05 + (keyword_count * 0.12)
-    return min(0.99, bec_score)
-
-def predict_bec_two_stage(text):
-    """
-    Two-stage BEC detection CASCADE logic:
-    
-    Stage 1: Header Model (Suspicious Sender Detection)
-    - Analyzes sender, reply-to mismatches, etc.
-    - If header looks LEGITIMATE -> Return LEGITIMATE (skip body)
-    - If header looks SUSPICIOUS -> Proceed to Stage 2
-    
-    Stage 2: Body Model (Message Content Analysis)
-    - Analyzes urgency, financial keywords, threats, etc.
-    - If body also looks SUSPICIOUS -> Return BEC (phishing)
-    - If body looks LEGITIMATE -> Return LEGITIMATE
-    
-    Returns: (prediction_label, confidence_score, details_dict)
-    """
-    if not models_ready:
-        return "Unknown", fallback_bec_score(text), {}
-    
+if RF_MODEL_PATH.exists():
     try:
-        import numpy as np
-
-        # Extract header and body
-        header, body = extract_header_body(text)
-
-        # Extract sender information from header
-        sender = extract_sender_from_header(header)
-        # Extract cleaned subject (removes <...> email addresses)
-        subject = extract_subject_from_header(header)
-
-        # Ensure non-empty
-        if not header.strip():
-            header = text[:200]
-        if not body.strip():
-            body = text
-
-        # ===== STAGE 1: HEADER ANALYSIS (Sender Verification) =====
-        header_features = header_vectorizer.transform([header])
-        header_pred_proba = header_model.predict_proba(header_features)[0]
-        header_bec_score = float(header_pred_proba[1])  # Probability of suspicious sender
-        header_prediction_label = "Suspicious" if header_bec_score >= 0.5 else "Legitimate"
-
-        # ===== STAGE 2: BODY ANALYSIS (Message Content) =====
-        body_features = body_vectorizer.transform([body])
-        body_pred_proba = body_model.predict_proba(body_features)[0]
-        body_bec_score = float(body_pred_proba[1])  # Probability of suspicious content
-        body_prediction_label = "Suspicious" if body_bec_score >= 0.5 else "Legitimate"
-
-        # Keyword matches in header and body
-        header_lower = header.lower()
-        body_lower = body.lower()
-        subject_lower = subject.lower() if subject else ""
-
-        # Match keywords against header+subject and body separately
-        header_keyword_matches = [kw for kw in BEC_KEYWORDS if kw.lower() in (header_lower + ' ' + subject_lower)]
-        body_keyword_matches = [kw for kw in BEC_KEYWORDS if kw.lower() in body_lower]
-        subject_keyword_matches = [kw for kw in BEC_KEYWORDS if kw.lower() in subject_lower]
-        header_keyword_count = len(header_keyword_matches)
-        body_keyword_count = len(body_keyword_matches)
-        total_keyword_matches = header_keyword_count + body_keyword_count
-
-        # Small heuristic boost from keyword matches (capped)
-        keyword_signal = min(0.2, 0.05 * total_keyword_matches)
-
-        header_is_suspicious = header_bec_score >= 0.5
-        body_is_suspicious = body_bec_score >= 0.5
-
-        # ===== FINAL DECISION: CASCADE LOGIC =====
-        # Both header AND body must be suspicious to classify as BEC normally,
-        # but keyword evidence can increase confidence.
-        if header_is_suspicious and body_is_suspicious:
-            # Stack both scores for final confidence
-            stacked = np.array([[header_bec_score, body_bec_score]])
-            final_pred_proba = final_model.predict_proba(stacked)[0]
-            final_bec_score = float(final_pred_proba[1])
-            final_bec_score = min(0.99, final_bec_score + keyword_signal)
-            prediction = "BEC"
-        else:
-            # If either header or body is clean, it's legitimate but include keyword signal
-            final_bec_score = (min(header_bec_score, body_bec_score) * 0.5) + keyword_signal
-            final_bec_score = min(0.99, final_bec_score)
-            prediction = "Legitimate"
-
-        details = {
-            "sender": sender,
-            "subject": subject,
-            "subject_keyword_matches": subject_keyword_matches,
-            "subject_keyword_count": len(subject_keyword_matches),
-            "header_prediction": header_prediction_label,
-            "header_bec_score": round(header_bec_score, 4),
-            "header_keyword_matches": header_keyword_matches,
-            "header_keyword_count": header_keyword_count,
-            "stage_1_header_suspicious": header_is_suspicious,
-            "body_prediction": body_prediction_label,
-            "body_bec_score": round(body_bec_score, 4),
-            "body_keyword_matches": body_keyword_matches,
-            "body_keyword_count": body_keyword_count,
-            "stage_2_body_suspicious": body_is_suspicious,
-            "final_bec_score": round(final_bec_score, 4),
-            "keyword_signal": round(keyword_signal, 4),
-            "header_model": metadata.get('header_model', 'XGBoost'),
-            "body_model": metadata.get('body_model', 'KNN'),
-            "cascade_logic": "Both header AND body must be suspicious; keywords add heuristic signal"
-        }
-
-        return prediction, final_bec_score, details
-    
+        with open(RF_MODEL_PATH, 'rb') as f:
+            rf_model = pickle.load(f)
+        print(f"SUCCESS: Loaded Random Forest model from {RF_MODEL_PATH}")
     except Exception as e:
-        print(f"Error in two-stage prediction: {e}")
-        return "Error", fallback_bec_score(text), {"error": str(e)}
+        print(f"Failed to load Random Forest model: {e}")
+        rf_model = None
+else:
+    print(f"WARNING: {RF_MODEL_PATH} not found. Random Forest inference unavailable.")
+
+if RF_VECTORIZER_PATH.exists():
+    try:
+        if RF_VECTORIZER_PATH.suffix.lower() == '.joblib':
+            import joblib
+            rf_vectorizer = joblib.load(RF_VECTORIZER_PATH)
+        else:
+            with open(RF_VECTORIZER_PATH, 'rb') as f:
+                rf_vectorizer = pickle.load(f)
+        print(f"SUCCESS: Loaded Random Forest vectorizer from {RF_VECTORIZER_PATH}")
+    except Exception as e:
+        print(f"Failed to load Random Forest vectorizer: {e}")
+        rf_vectorizer = None
+else:
+    print(f"WARNING: {RF_VECTORIZER_PATH} not found. Random Forest inference unavailable.")
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """
-    Endpoint for BEC detection.
-    
-    Expected input:
-    {
-        "text": "email content here"
-    }
-    
-    Returns:
-    {
-        "prediction": "BEC" or "Legitimate",
-        "confidence": 0.0-1.0,
-        "model_used": "two_stage",
-        "details": {...}
-    }
-    """
     data = request.json
     text_to_test = data.get('text', '')
+    model_choice = str(data.get('model', 'distilbert')).strip().lower()
 
     if not text_to_test:
         return jsonify({'error': 'No text provided'}), 400
 
-    # Run two-stage BEC detection
-    prediction, confidence, details = predict_bec_two_stage(text_to_test)
-    
-    return jsonify({
-        'prediction': prediction,
-        'confidence': float(confidence),
-        'bec_probability': f"{float(confidence)*100:.2f}%",
-        'original_text_length': len(text_to_test),
-        'model_used': 'two_stage_bec',
-        'system': 'Two-Stage BEC Detection (Header + Body)',
-        'fallback_used': not models_ready,
-        'details': details,
-    })
+    if model_choice in ('rf', 'random_forest', 'randomforest'):
+        selected_model = 'random_forest'
+        if rf_model is not None and rf_vectorizer is not None:
+            try:
+                features = rf_vectorizer.transform([str(text_to_test)])
+                if hasattr(rf_model, 'predict_proba'):
+                    phishing_score = float(rf_model.predict_proba(features)[0][1])
+                else:
+                    pred = int(rf_model.predict(features)[0])
+                    phishing_score = float(pred)
+                result = "Phishing" if phishing_score >= 0.60 else "Safe"
+                confidence = phishing_score
+                model_fallback = False
+            except Exception as e:
+                print(f"Random Forest inference failed: {e}")
+                model_fallback = True
+        else:
+            model_fallback = True
+    else:
+        selected_model = 'distilbert'
+        if model is not None and tokenizer is not None:
+            try:
+                enc = tokenizer([str(text_to_test)], max_length=192, padding='max_length', truncation=True, return_tensors='pt')
+                input_ids = enc['input_ids'].to(device)
+                attention_mask = enc['attention_mask'].to(device)
+                with torch.no_grad():
+                    logits, mp, anom = model(input_ids, attention_mask)
+                    probs = F.softmax(logits, dim=1)[:, 1].cpu().numpy()
+                phishing_score = float(probs[0]) if hasattr(probs, '__len__') else float(probs)
+                result = "Phishing" if phishing_score >= 0.60 else "Safe"
+                confidence = phishing_score
+                model_fallback = False
+            except Exception as e:
+                print(f"Distil model inference failed: {e}")
+                model_fallback = True
+        else:
+            model_fallback = True
 
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint."""
-    return jsonify({
-        'status': 'ok' if models_ready else 'degraded',
-        'models_ready': models_ready,
-        'header_model': metadata.get('header_model'),
-        'body_model': metadata.get('body_model'),
-        'final_accuracy': metadata.get('final_accuracy'),
-    })
+    if model_fallback:
+        # Deterministic fallback so the same text always gets the same result.
+        phishing_score = fallback_phishing_score(text_to_test)
+        result = "Phishing" if phishing_score >= 0.60 else "Safe"
+        confidence = float(phishing_score)
 
-@app.route('/verify-models', methods=['GET'])
-def verify_models():
-    """
-    Verify all models are loaded and working correctly.
-    Returns detailed model information and test prediction.
-    """
-    if not models_ready:
-        return jsonify({
-            'status': 'error',
-            'message': 'Models not ready',
-            'models_loaded': {
-                'header_vectorizer': header_vectorizer is not None,
-                'body_vectorizer': body_vectorizer is not None,
-                'header_model': header_model is not None,
-                'body_model': body_model is not None,
-                'final_model': final_model is not None,
-            }
-        }), 503
-    
+    # continue to assemble full response including sender checks
+
+    # --- Sender/signature consistency checks ---
     try:
-        # Test with a sample email
-        test_email = """From: boss@company.com
-Reply-To: someone@external-bank.com
-Subject: Urgent: Wire Transfer Needed
+        # Search whole text for header email and signature (more robust)
+        full_text = str(text_to_test)
+        from_match = re.search(r'From:\s*([^\n<]+)', full_text, re.IGNORECASE)
+        header_sender_raw = from_match.group(1).strip() if from_match else ''
+        header_email = extract_email_from_header(full_text)
+        if header_sender_raw.strip().lower() == 'me' and header_email:
+            header_sender_raw = sender_name_from_email(header_email) or header_email
+        signature_name = extract_signature_name(full_text)
+        if not signature_name:
+            # Fallback: last multi-word capitalized name in the text
+            names = re.findall(r'\b([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b', full_text)
+            if names:
+                signature_name = names[-1]
 
-Hi,
-Please wire $50,000 immediately to the account below for a confidential business transaction.
-This is urgent and needs to be done before end of day.
-Don't discuss with anyone.
+        def _normalize(n):
+            return re.sub(r'[^a-z]', '', (n or '').lower())
 
-Best regards,
-CEO"""
-        
-        # Run prediction
-        prediction, confidence, details = predict_bec_two_stage(test_email)
-        
+        header_name_norm = _normalize(header_sender_raw)
+        signature_norm = _normalize(signature_name)
+        email_local = (header_email.split('@')[0] if header_email else '')
+        email_local_norm = _normalize(email_local)
+
+        name_matches_email = False
+        name_matches_signature = False
+        signature_matches_email = False
+        if header_name_norm and email_local_norm:
+            name_matches_email = (header_name_norm in email_local_norm) or (email_local_norm in header_name_norm)
+        if signature_norm and header_name_norm:
+            name_matches_signature = (signature_norm in header_name_norm) or (header_name_norm in signature_norm)
+        if signature_norm and email_local_norm:
+            signature_matches_email = (signature_norm in email_local_norm) or (email_local_norm in signature_norm)
+
+        sender_info = {
+            'header_sender': header_sender_raw,
+            'header_email': header_email,
+            'signature_name': signature_name,
+            'name_matches_email': name_matches_email,
+            'name_matches_signature': name_matches_signature,
+            'suspicious_sender_mismatch': False
+        }
+
+        # Flag as suspicious when signature doesn't match header email/local-part
+        if (signature_name and header_email and not signature_matches_email) or (header_email and header_sender_raw and not name_matches_email):
+            sender_info['suspicious_sender_mismatch'] = True
+        sender_info['signature_matches_email'] = signature_matches_email
+
+        # If sender-signature mismatch found, enforce Phishing decision
+        enforced = False
+        if sender_info.get('suspicious_sender_mismatch'):
+            enforced = True
+            result = 'Phishing'
+            confidence = max(float(confidence), 0.95)
+
+        # Attach sender_info to response
+        resp = {
+            'prediction': result,
+            'confidence': float(confidence),
+            'original_text_length': len(text_to_test),
+            'model_used': selected_model,
+            'fallback_used': model_fallback,
+            'sender_info': sender_info,
+            'enforced_sender_mismatch': enforced
+        }
+        return jsonify(resp)
+    except Exception:
+        # If anything goes wrong, return the original response
         return jsonify({
-            'status': 'ok',
-            'message': 'All models loaded and verified',
-            'models_configuration': {
-                'header_model': metadata.get('header_model'),
-                'body_model': metadata.get('body_model'),
-                'header_features': header_vectorizer.get_feature_names_out().shape[0],
-                'body_features': body_vectorizer.get_feature_names_out().shape[0],
-            },
-            'model_accuracy': {
-                'header_accuracy': metadata.get('header_accuracy'),
-                'body_accuracy': metadata.get('body_accuracy'),
-                'final_accuracy': metadata.get('final_accuracy'),
-            },
-            'test_prediction': {
-                'prediction': prediction,
-                'confidence': float(confidence),
-                'details': details
-            },
-            'metadata': metadata
+            'prediction': result,
+            'confidence': float(confidence),
+            'original_text_length': len(text_to_test),
+            'model_used': selected_model,
+            'fallback_used': model_fallback,
         })
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'Verification failed: {str(e)}'
-        }), 500
-
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

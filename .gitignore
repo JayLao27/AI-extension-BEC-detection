@@ -1,8 +1,4 @@
-﻿# Data files that are intentionally ignored (adjust if you track datasets)
-Dataset/phishing_email.csv
-Dataset/email_phishing_data.csv
-Dataset/emails.csv
-Dataset/Enron.csv
+﻿Dataset/Email_phishing.csv
 
 # Virtual environments
 venv/
