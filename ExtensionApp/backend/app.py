@@ -5,15 +5,18 @@ app = Flask(__name__)
 CORS(app) 
 
 import os
+import json
 from pathlib import Path
 import re
 import pickle
+import joblib
 
 try:
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
     from transformers import AutoTokenizer, AutoModel
+    from xgboost import XGBClassifier
     HAVE_TORCH = True
 except Exception as e:
     print(f"Optional dependency missing (torch/transformers): {e}")
@@ -23,6 +26,7 @@ except Exception as e:
     F = None
     AutoTokenizer = None
     AutoModel = None
+    XGBClassifier = None
 
 base_dir = Path(__file__).resolve().parents[2]
 legacy_model = Path(__file__).resolve().parent / 'model.pkl'
@@ -47,9 +51,15 @@ BEST_MODEL_PATH = first_existing_path([
     base_dir / 'outputs' / 'best_model.pt',
 ])
 
+BEST_MODEL_INFO_PATH = first_existing_path([
+    base_dir / 'outputs' / 'distilbert_header_body' / 'best_model_info.json',
+    base_dir / 'Datacleaning' / 'outputs' / 'distilbert_header_body' / 'best_model_info.json',
+])
+
 RF_MODEL_PATH = first_existing_path([
     base_dir / 'Datacleaning' / 'outputs' / 'RandomForest(FullDataset)' / 'rf_model.pkl',
     base_dir / 'outputs' / 'RandomForest(FullDataset)' / 'rf_model.pkl',
+    base_dir / 'outputs' / 'distilbert_header_body' / 'rf_model.joblib',
 ])
 
 RF_VECTORIZER_PATH = first_existing_path([
@@ -57,8 +67,24 @@ RF_VECTORIZER_PATH = first_existing_path([
     base_dir / 'Datacleaning' / 'outputs' / 'RandomForest(FullDataset)' / 'vectorizer.pkl',
     base_dir / 'outputs' / 'RandomForest(FullDataset)' / 'tfidf_vectorizer.joblib',
     base_dir / 'outputs' / 'RandomForest(FullDataset)' / 'vectorizer.pkl',
+    base_dir / 'outputs' / 'distilbert_header_body' / 'tfidf_vectorizer.joblib',
 ])
-MODEL_NAME = 'distilroberta-base'
+XGB_MODEL_PATH = first_existing_path([
+    base_dir / 'outputs' / 'distilbert_header_body' / 'xgb_model.joblib',
+    base_dir / 'Datacleaning' / 'outputs' / 'distilbert_header_body' / 'xgb_model.joblib',
+])
+
+MODEL_NAME = 'distilbert-base-uncased'
+
+best_model_info = {}
+if BEST_MODEL_INFO_PATH.exists():
+    try:
+        with open(BEST_MODEL_INFO_PATH, 'r', encoding='utf-8') as f:
+            best_model_info = json.load(f)
+        print(f"Loaded best-model metadata from {BEST_MODEL_INFO_PATH}")
+    except Exception as e:
+        print(f"Failed to load best-model metadata: {e}")
+        best_model_info = {}
 
 # Validate that we're using a distil model
 if 'distil' not in MODEL_NAME.lower():
@@ -151,46 +177,55 @@ if HAVE_TORCH:
     class MultiTaskPhishModel(nn.Module):
         def __init__(self, model_name, dropout, manip_dim):
             super().__init__()
-            self.backbone = AutoModel.from_pretrained(model_name)
-            hidden_size = self.backbone.config.hidden_size
+            self.header_backbone = AutoModel.from_pretrained(model_name)
+            self.body_backbone = AutoModel.from_pretrained(model_name)
+            hidden_size = self.header_backbone.config.hidden_size + self.body_backbone.config.hidden_size
             self.dropout = nn.Dropout(dropout)
             self.classifier = nn.Linear(hidden_size, 2)
             self.manip_head = nn.Linear(hidden_size, manip_dim)
             self.anom_head = nn.Linear(hidden_size, 1)
 
-        def forward(self, input_ids, attention_mask):
-            outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
-            pooled = outputs.last_hidden_state[:, 0]
+        def forward(self, h_input_ids, h_attention_mask, b_input_ids, b_attention_mask):
+            h_out = self.header_backbone(input_ids=h_input_ids, attention_mask=h_attention_mask)
+            b_out = self.body_backbone(input_ids=b_input_ids, attention_mask=b_attention_mask)
+            pooled = torch.cat([h_out.last_hidden_state[:, 0], b_out.last_hidden_state[:, 0]], dim=1)
             pooled = self.dropout(pooled)
             logits = self.classifier(pooled)
             manip = torch.sigmoid(self.manip_head(pooled))
             anom = torch.sigmoid(self.anom_head(pooled))
             return logits, manip, anom
 
-    # Try to load the trained PyTorch checkpoint and tokenizer
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    if BEST_MODEL_PATH.exists():
+
+    if best_model_info:
+        print(f"Best-model metadata: {best_model_info}")
+
+    distilbert_model = None
+    distilbert_tokenizer = None
+    distilbert_checkpoint = Path(best_model_info.get('best_artifact', BEST_MODEL_PATH)) if best_model_info.get('best_model', '').lower() == 'distilbert' else BEST_MODEL_PATH
+    if distilbert_checkpoint.exists():
         try:
-            tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-            model = MultiTaskPhishModel(MODEL_NAME, dropout=0.3, manip_dim=5).to(device)
-            model.load_state_dict(torch.load(BEST_MODEL_PATH, map_location=device))
-            model.eval()
-            print(f"SUCCESS: Loaded PyTorch checkpoint from {BEST_MODEL_PATH}")
+            distilbert_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+            distilbert_model = MultiTaskPhishModel(MODEL_NAME, dropout=0.1, manip_dim=5).to(device)
+            distilbert_model.load_state_dict(torch.load(distilbert_checkpoint, map_location=device))
+            distilbert_model.eval()
+            print(f"SUCCESS: Loaded DistilBERT checkpoint from {distilbert_checkpoint}")
         except Exception as e:
             print(f"Failed to load PyTorch model: {e}")
-            model = None
-            tokenizer = None
+            distilbert_model = None
+            distilbert_tokenizer = None
     else:
-        print(f"WARNING: {BEST_MODEL_PATH} not found. Falling back to dummy predictor.")
-        model = None
-        tokenizer = None
+        print(f"WARNING: {distilbert_checkpoint} not found. Falling back to dummy predictor.")
+
+    model = distilbert_model
+    tokenizer = distilbert_tokenizer
 else:
     print("Torch/Transformers not available — server will run using dummy fallback.")
 
+rf_model = None
 if RF_MODEL_PATH.exists():
     try:
-        with open(RF_MODEL_PATH, 'rb') as f:
-            rf_model = pickle.load(f)
+        rf_model = joblib.load(RF_MODEL_PATH)
         print(f"SUCCESS: Loaded Random Forest model from {RF_MODEL_PATH}")
     except Exception as e:
         print(f"Failed to load Random Forest model: {e}")
@@ -198,14 +233,19 @@ if RF_MODEL_PATH.exists():
 else:
     print(f"WARNING: {RF_MODEL_PATH} not found. Random Forest inference unavailable.")
 
+if XGB_MODEL_PATH.exists():
+    try:
+        xgb_model = joblib.load(XGB_MODEL_PATH)
+        print(f"SUCCESS: Loaded XGBoost model from {XGB_MODEL_PATH}")
+    except Exception as e:
+        print(f"Failed to load XGBoost model: {e}")
+        xgb_model = None
+else:
+    print(f"WARNING: {XGB_MODEL_PATH} not found. XGBoost inference unavailable.")
+
 if RF_VECTORIZER_PATH.exists():
     try:
-        if RF_VECTORIZER_PATH.suffix.lower() == '.joblib':
-            import joblib
-            rf_vectorizer = joblib.load(RF_VECTORIZER_PATH)
-        else:
-            with open(RF_VECTORIZER_PATH, 'rb') as f:
-                rf_vectorizer = pickle.load(f)
+        rf_vectorizer = joblib.load(RF_VECTORIZER_PATH)
         print(f"SUCCESS: Loaded Random Forest vectorizer from {RF_VECTORIZER_PATH}")
     except Exception as e:
         print(f"Failed to load Random Forest vectorizer: {e}")
