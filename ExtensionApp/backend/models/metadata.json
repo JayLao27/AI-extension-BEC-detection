@@ -1,9 +1,9 @@
 {
-  "header_model": "XGBoost",
-  "body_model": "KNN",
-  "header_accuracy": 0.9964345452944802,
-  "body_accuracy": 0.9711242186812219,
-  "final_accuracy": 0.997711066114975,
+  "total_legitimate_emails": 18477,
+  "total_phishing_emails": 31859,
   "impersonation_threshold": 0.5,
-  "description": "Two-Stage BEC Detection: Header + Body Classifier with Logistic Regression Stacking"
+  "best_header_model": "RandomForest(Structured)",
+  "best_body_model": "KNN(PreprocessedText)",
+  "gmm_components": 85,
+  "final_cascaded_accuracy": 0.9593294008072027
 }

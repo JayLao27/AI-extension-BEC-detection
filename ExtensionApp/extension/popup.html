@@ -1,44 +1,101 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Phishing Detector</title>
+    <meta charset="UTF-8">
+    <title>BEC Shield — Email Security Analyzer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" type="text/css" href="popup.css">
 </head>
 <body>
     <div class="container">
-        <h2>Phishing Detector</h2>
-
-        <label for="modelSelect" class="model-label">Model</label>
-        <select id="modelSelect" class="model-select">
-            <option value="two_stage_bec">Two-Stage BEC Detection (Header XGBoost + Body KNN)</option>
-            <option value="rf">RandomForest (rf_model.pkl)</option>
-        </select>
-        
-        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-            <button id="scanPageBtn" style="background-color: #ff9800; flex: 1;">Scan Current Page</button>
-            <button id="resetBtn" style="background-color: #f44336; flex: 1;">Reset</button>
+        <!-- Header -->
+        <div class="app-header">
+            <div class="shield-icon">🛡️</div>
+            <div class="header-text">
+                <h1>BEC Shield</h1>
+            </div>
         </div>
-        
-        <p style="text-align: center; margin: 0 0 10px 0;">-- OR PASTE TEXT MANUALLY --</p>
 
+        <!-- Action Buttons -->
+        <div class="btn-row">
+            <button id="scanPageBtn" class="btn btn-scan">
+                <span class="btn-icon">🔍</span> Scan Page
+            </button>
+            <button id="resetBtn" class="btn btn-reset">
+                <span class="btn-icon">↺</span> Reset
+            </button>
+        </div>
+
+        <div class="divider"><span>or paste manually</span></div>
+
+        <!-- Manual Inputs -->
         <div class="manual-inputs">
             <label for="inputSubject">Subject</label>
-            <input id="inputSubject" type="text" placeholder="Paste the email subject here...">
+            <input id="inputSubject" type="text" placeholder="Email subject...">
 
-            <label for="inputHeader">Header</label>
-            <textarea id="inputHeader" rows="3" placeholder="Paste sender, recipient, date, or other header details here..."></textarea>
+            <label for="inputHeader">From / Header</label>
+            <textarea id="inputHeader" rows="2" placeholder="From: Name <email@domain.com>&#10;Reply-To: ..."></textarea>
 
             <label for="inputBody">Body</label>
-            <textarea id="inputBody" rows="6" placeholder="Paste the email body here..."></textarea>
+            <textarea id="inputBody" rows="5" placeholder="Paste the email body here..."></textarea>
         </div>
-        
-        <button id="analyzeBtn">Analyze Text</button>
-        
-        <div id="loader" class="hidden">Analyzing...</div>
-        
-        <div id="resultBox" class="hidden">
-            <h3 id="resultStatus"></h3>
-            <p id="confidenceLevel"></p>
+
+        <button id="analyzeBtn" class="btn btn-analyze">
+            <span class="btn-icon">🔬</span> Analyze Email
+        </button>
+
+        <!-- Loader -->
+        <div id="loader" class="hidden">
+            <div class="loader-spinner"></div>
+            <span>Analyzing email…</span>
+        </div>
+
+        <!-- Result Card -->
+        <div id="resultBox" class="hidden result-card">
+
+            <!-- Verdict Banner -->
+            <div id="verdictBanner" class="verdict-banner">
+                <div class="verdict-icon" id="verdictIcon"></div>
+                <div class="verdict-text">
+                    <div id="verdictTitle" class="verdict-title"></div>
+                    <div id="verdictSubtitle" class="verdict-subtitle"></div>
+                </div>
+            </div>
+
+            <!-- Probability Meter -->
+            <div class="prob-section">
+                <div class="prob-header">
+                    <span class="prob-label">BEC Probability</span>
+                    <span id="probValue" class="prob-value"></span>
+                </div>
+                <div class="prob-bar-track">
+                    <div id="probBar" class="prob-bar"></div>
+                </div>
+            </div>
+
+            <!-- Summary -->
+            <div id="summarySection" class="summary-section hidden">
+                <p id="summaryText" class="summary-text"></p>
+            </div>
+
+            <!-- Reasons -->
+            <div id="reasonsSection" class="reasons-section hidden">
+                <div class="reasons-header">
+                    <span class="reasons-title">📋 Evidence &amp; Signals</span>
+                    <button class="toggle-btn" id="toggleReasons">Show</button>
+                </div>
+                <ul id="reasonsList" class="reasons-list hidden"></ul>
+            </div>
+
+            <!-- Stage Breakdown -->
+            <div id="breakdownSection" class="breakdown-section hidden">
+                <div class="breakdown-header">
+                    <span class="breakdown-title">📊 Stage Breakdown</span>
+                </div>
+                <div id="breakdownGrid" class="breakdown-grid"></div>
+            </div>
+
         </div>
     </div>
     <script src="popup.js"></script>
