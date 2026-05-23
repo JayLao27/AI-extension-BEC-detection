@@ -25,36 +25,113 @@ function scrapeEmailContent() {
         return { ok: false, reason: 'not_open_email' };
     }
 
-    const subject = document.title || "";
+    // Clean receiver email and inbox client suffixes from the subject (document title)
+    let subject = document.title || "";
+    
+    // 1. Remove trailing email client names (e.g. "- Gmail", "- Outlook", "- Yahoo Mail", "- Mail")
+    subject = subject.replace(/\s*[-—|•]\s*(Gmail|Outlook|Yahoo Mail|Mail)\s*$/gi, '');
+    
+    // 2. Remove trailing receiver's email address in the format "- email@domain.com"
+    subject = subject.replace(/\s*[-—|•]\s*[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\s*$/g, '');
+    
+    // 3. Repeat client name removal in case the order was different
+    subject = subject.replace(/\s*[-—|•]\s*(Gmail|Outlook|Yahoo Mail|Mail)\s*$/gi, '');
+    
+    subject = subject.trim();
+
+    function parseSenderString(text) {
+        if (!text) return { name: "", email: "" };
+        text = text.trim();
+        
+        // Match "Name <email@domain.com>"
+        const bracketMatch = text.match(/^([^<]+)<([^>]+)>/);
+        if (bracketMatch) {
+            return {
+                name: bracketMatch[1].trim(),
+                email: bracketMatch[2].trim()
+            };
+        }
+        
+        // Match "email@domain.com"
+        const emailMatch = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+        if (emailMatch) {
+            const email = emailMatch[0].trim();
+            if (text === email) {
+                return { name: "", email: email };
+            }
+            const name = text.replace(email, '').replace(/<|>/g, '').trim();
+            return { name: name, email: email };
+        }
+        
+        return { name: text, email: "" };
+    }
 
     function normalizeSenderLabel(nameText, emailText) {
         const cleanedName = (nameText || '').trim();
         const cleanedEmail = (emailText || '').trim();
-        if (cleanedName && cleanedName.toLowerCase() !== 'me') return cleanedName;
-        if (cleanedEmail) return cleanedEmail;
+        
+        // If we have both name and email, return standard "Name <email>" format for accuracy
+        if (cleanedName && cleanedName.toLowerCase() !== 'me') {
+            if (cleanedEmail) {
+                if (cleanedName.toLowerCase() === cleanedEmail.toLowerCase()) {
+                    return cleanedEmail;
+                }
+                return `${cleanedName} <${cleanedEmail}>`;
+            }
+            return cleanedName;
+        }
+        if (cleanedEmail) {
+            return cleanedEmail;
+        }
         return "Unknown Sender";
     }
 
     let senderName = "";
     let senderEmail = "";
 
-    const gmailSenderName = document.querySelector('span[email]');
-    if (gmailSenderName) {
-        senderName = (gmailSenderName.textContent || "").trim();
-        senderEmail = (gmailSenderName.getAttribute('email') || "").trim();
-        if (senderName.toLowerCase() === 'me' && senderEmail) senderName = "";
+    if (host.includes('mail.google.com')) {
+        // Target active opened email sender specifically by finding parent .adn container of the active .a3s.aiL body
+        const messageContainer = gmailBody ? gmailBody.closest('.adn') : null;
+        const gmailSenderElement = messageContainer ? 
+            (messageContainer.querySelector('.gD') || messageContainer.querySelector('span[email]')) : 
+            (document.querySelector('.adn .gD') || document.querySelector('.gD') || document.querySelector('span[email]'));
+            
+        if (gmailSenderElement) {
+            const attrName = (gmailSenderElement.getAttribute('name') || "").trim();
+            const attrEmail = (gmailSenderElement.getAttribute('email') || "").trim();
+            const textContent = (gmailSenderElement.textContent || "").trim();
+
+            const parsedText = parseSenderString(textContent);
+            senderName = attrName || parsedText.name;
+            senderEmail = attrEmail || parsedText.email;
+
+            if (!senderEmail && parsedText.email) {
+                senderEmail = parsedText.email;
+            }
+            if (senderName.toLowerCase() === 'me') {
+                senderName = "";
+            }
+        }
+    } else if (host.includes('outlook.office.com') || host.includes('outlook.live.com')) {
+        // Outlook Web App sender element
+        const outlookFromField = document.querySelector('[data-test-id="from-field"]') || document.querySelector('[aria-label*="From"]');
+        if (outlookFromField) {
+            const parsed = parseSenderString(outlookFromField.textContent);
+            senderName = parsed.name;
+            senderEmail = parsed.email;
+        }
     }
 
-    const outlookFromField = document.querySelector('[data-test-id="from-field"]');
-    if (outlookFromField && !senderName) {
-        senderName = outlookFromField.textContent || "";
-    }
-
-    if (!senderName) {
+    if (!senderName && !senderEmail) {
         const headerElements = document.querySelectorAll('[role="heading"], .bAk, [data-tooltip-id]');
         for (let elem of headerElements) {
-            const text = elem.textContent;
-            if (text && text.includes('@')) { senderEmail = text; break; }
+            const text = (elem.textContent || "").trim();
+            if (text && text.includes('@')) {
+                const parsed = parseSenderString(text);
+                senderName = parsed.name;
+                senderEmail = parsed.email;
+                break;
+            }
         }
     }
 
@@ -78,7 +155,7 @@ function scrapeEmailContent() {
 const MANUAL_DRAFT_KEY = 'phishing_detector_manual_draft';
 
 function getSelectedModel() {
-    return 'rf';
+    return 'distilbert';
 }
 
 function getManualInputs() {
@@ -132,9 +209,14 @@ function initPopupPersistence() {
         input.addEventListener('blur', saveManualDraft);
         input.addEventListener('paste', () => window.setTimeout(saveManualDraft, 0));
     });
-    window.addEventListener('beforeunload', saveManualDraft);
+
+    window.addEventListener('beforeunload', () => {
+        saveManualDraft();
+    });
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') saveManualDraft();
+        if (document.visibilityState === 'hidden') {
+            saveManualDraft();
+        }
     });
 }
 
@@ -331,11 +413,19 @@ document.getElementById('scanPageBtn').addEventListener('click', async () => {
                 body.value    = scrapedBody;
                 saveManualDraft();
 
+                // Format structured header
+                const headerPayload = `From: ${scrapedSender}\nSubject: ${scrapedSubject}`;
+                const bodyPayload = scrapedBody;
+
                 try {
                     const response = await fetch('http://127.0.0.1:5000/predict', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text: scrapedText, model: getSelectedModel() })
+                        body: JSON.stringify({
+                            header: headerPayload,
+                            body: bodyPayload,
+                            model: getSelectedModel()
+                        })
                     });
                     const data = await response.json();
                     if (response.ok) {
@@ -364,12 +454,26 @@ document.getElementById('scanPageBtn').addEventListener('click', async () => {
 // Analyze Button (manual)
 // =====================================================================
 document.getElementById('analyzeBtn').addEventListener('click', async () => {
-    const text = buildManualText();
+    const { subject, header, body } = getManualInputs();
+    const subjectText = subject.value.trim();
+    const headerText  = header.value.trim();
+    const bodyText    = body.value.trim();
 
-    if (!text) {
+    if (!subjectText && !headerText && !bodyText) {
         alert('Please enter at least one of Subject, Header, or Body.');
         return;
     }
+
+    // Format manual header block
+    let headerPayload = "";
+    if (headerText) {
+        headerPayload += headerText;
+    }
+    if (subjectText) {
+        if (headerPayload) headerPayload += "\n";
+        headerPayload += `Subject: ${subjectText}`;
+    }
+    const bodyPayload = bodyText;
 
     const loader    = document.getElementById('loader');
     const resultBox = document.getElementById('resultBox');
@@ -380,7 +484,11 @@ document.getElementById('analyzeBtn').addEventListener('click', async () => {
         const response = await fetch('http://127.0.0.1:5000/predict', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: text, model: getSelectedModel() })
+            body: JSON.stringify({
+                header: headerPayload,
+                body: bodyPayload,
+                model: getSelectedModel()
+            })
         });
         const data = await response.json();
 

@@ -425,3 +425,43 @@ body {
 .breakdown-val.high { color: #f87171; }
 .breakdown-val.med { color: #fbbf24; }
 .breakdown-val.low { color: #34d399; }
+
+/* ---- MODEL SELECTOR ---- */
+.model-select-container {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 2px;
+}
+
+.model-select-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #64748b;
+}
+
+.model-select {
+    background: #141826;
+    border: 1px solid #1e2438;
+    color: #f1f1f1;
+    border-radius: 7px;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    font-family: inherit;
+    font-weight: 500;
+    cursor: pointer;
+    outline: none;
+    transition: all 0.2s ease;
+}
+
+.model-select:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.model-select:hover {
+    background: #1c2235;
+    border-color: #3b82f6;
+}
