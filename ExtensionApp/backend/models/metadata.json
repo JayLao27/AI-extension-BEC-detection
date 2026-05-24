@@ -1,9 +1,0 @@
-{
-  "total_legitimate_emails": 18477,
-  "total_phishing_emails": 31859,
-  "impersonation_threshold": 0.5,
-  "best_header_model": "RandomForest(Structured)",
-  "best_body_model": "KNN(PreprocessedText)",
-  "gmm_components": 85,
-  "final_cascaded_accuracy": 0.9593294008072027
-}
